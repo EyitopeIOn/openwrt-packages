@@ -50,7 +50,9 @@ CONFIGURE_ARGS = \
 	--leasefile \
 	--portinuse \
 	--firewall=iptables \
-	--disable-fork
+	--disable-fork \
+
+CONFIGURE_ARGS += --vendorcfg
 
 TARGET_CFLAGS += $(FPIC) -flto
 TARGET_LDFLAGS += -Wl,--gc-sections,--as-needed
