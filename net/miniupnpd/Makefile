@@ -9,14 +9,8 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=miniupnpd
 PKG_VERSION:=master
-PKG_RELEASE:=3
 
 PKG_SOURCE_URL:=https://github.com/EyitopeIOn/miniupnp
-
-PKG_MAINTAINER:=
-PKG_LICENSE:=BSD-3-Clause
-PKG_LICENSE_FILES:=LICENSE
-PKG_CPE_ID:=cpe:/a:miniupnp_project:miniupnpd
 
 PKG_INSTALL:=1
 PKG_BUILD_PARALLEL:=1
