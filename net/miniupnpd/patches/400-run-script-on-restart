@@ -1,0 +1,187 @@
+--- a/miniupnpd.c
++++ b/miniupnpd.c
+@@ -1410,6 +1410,12 @@ init(int argc, char * * argv, struct run
+ 				lease_file = ary_options[i].value;
+ 				break;
+ #endif	/* ENABLE_LEASEFILE */
++
++			case UPNPNOTIFYSCRIPT:
++				notify_script = ary_options[i].value;
++				syslog(LOG_INFO,"notify script set to %s", notify_script );
++				break;
++
+ 			case UPNPMINISSDPDSOCKET:
+ 				minissdpdsocketpath = ary_options[i].value;
+ 				break;
+@@ -2067,6 +2073,7 @@ main(int argc, char * * argv)
+ #ifdef ENABLE_UPNPPINHOLE
+ 	unsigned int next_pinhole_ts;
+ #endif
++	syslog(LOG_INFO, "MiniUPnPd using Netduma patched version with notify script");
+ 
+ 	for(i = 0; i < argc; i++) {
+ 		if(strcmp(argv[i], "version") == 0 || strcmp(argv[i], "--version") == 0) {
+--- a/options.c
++++ b/options.c
+@@ -94,6 +94,7 @@ static const struct {
+ #ifdef IGD_V2
+ 	{ UPNPFORCEIGDDESCV1, "force_igd_desc_v1"},
+ #endif
++	{ UPNPNOTIFYSCRIPT, "notify_script"},
+ 	{ UPNPMINISSDPDSOCKET, "minissdpdsocket"},
+ 	{ UPNPSECUREMODE, "secure_mode"}
+ };
+--- a/options.h
++++ b/options.h
+@@ -73,6 +73,7 @@ enum upnpconfigoptions {
+ #ifdef ENABLE_LEASEFILE
+ 	UPNPLEASEFILE,			/* lease_file */
+ #endif
++	UPNPNOTIFYSCRIPT,	/* notify_script */
+ 	UPNPMINISSDPDSOCKET,	/* minissdpdsocket */
+ #ifdef IGD_V2
+ 	UPNPFORCEIGDDESCV1,
+--- a/upnpglobalvars.c
++++ b/upnpglobalvars.c
+@@ -30,6 +30,10 @@ uint16_t ext_stun_port = 0;
+ const char* lease_file = 0;
+ #endif
+ 
++/* file to store the notify script */
++const char* notify_script = 0;
++
++
+ /* forced ip address to use for this interface
+  * when NULL, getifaddr() is used */
+ const char * use_ext_ip_addr = 0;
+--- a/upnpglobalvars.h
++++ b/upnpglobalvars.h
+@@ -31,6 +31,9 @@ extern uint16_t ext_stun_port;
+ extern const char * lease_file;
+ #endif
+ 
++/* name of the notify script */
++extern const char *notify_script;
++
+ /* forced ip address to use for this interface
+  * when NULL, getifaddr() is used */
+ extern const char * use_ext_ip_addr;
+--- a/upnpredirect.c
++++ b/upnpredirect.c
+@@ -14,6 +14,7 @@
+ #include <netinet/in.h>
+ #include <net/if.h>
+ #include <arpa/inet.h>
++#include <sys/wait.h>
+ 
+ #include <stdio.h>
+ #include <ctype.h>
+@@ -66,8 +67,9 @@ proto_atoi(const char * protocol)
+ 	return proto;
+ }
+ 
++
+ /* proto_itoa()
+- * convert IPPROTO_UDP, IPPROTO_UDP, etc. to "UDP", "TCP" */
++ * convert IPPROTO_UDP, IPPROTO_TCP, etc. to "UDP", "TCP" */
+ static const char *
+ proto_itoa(int proto)
+ {
+@@ -90,13 +92,74 @@ proto_itoa(int proto)
+ 	return protocol;
+ }
+ 
++
++static pid_t do_notifyscript_fork(void) {
++	pid_t p;
++	int status;
++
++	if ( (p = fork() ) > 0 ) {
++		waitpid(p, &status, 0);
++	} else if ( !p ) {
++		if ( (p = fork() ) > 0 )
++			exit(EXIT_SUCCESS);
++		else if ( p < 0 )
++			syslog(LOG_INFO, "could not subfork for notify script");
++		else { 
++			syslog(LOG_INFO, "could not fork for the notify script");
++		}
++	}
++
++	return p;
++}
++
++
++static void do_notifyscript_execve(const char* filename, char* const argv[], char* const envp[] ) {
++	execve( filename, argv, envp );
++	syslog(LOG_INFO, "failed to execute the notify script '%s'", filename);
++}
++
++
++/* execute the notify script */
++static void do_notifyscript_addmap( unsigned short eport, const char *iaddr, 
++				    unsigned short iport, int proto, const char *desc,
++			    	    unsigned int timestamp )
++{
++	if ( notify_script && do_notifyscript_fork() == 0 ) {
++		char szeport[32], sziport[32];
++		sprintf( szeport, "%u", eport );
++		sprintf( sziport, "%u", iport );
++
++		const char *argv[] = { 
++			notify_script,
++			"add",
++			szeport,
++			proto_itoa(proto),
++			desc,
++			NULL
++		};
++		const char *envp[] = { NULL };
++		do_notifyscript_execve( notify_script, argv, envp );
++	}
++}	
++
++static void do_notifyscript_delmap(unsigned short eport, int proto ) {
++	if ( (notify_script && do_notifyscript_fork()) == 0 ) {
++		char szeport[32];
++		sprintf (szeport, "%u", eport );
++
++		char *argv[] = { notify_script, "del", szeport, proto_itoa( proto ), NULL };
++		char *envp[] = { NULL };
++		do_notifyscript_execve( notify_script, argv, envp );
++	}
++}
++
+ #ifdef ENABLE_LEASEFILE
+ static int
+ lease_file_add(unsigned short eport,
+-               const char * iaddr,
++               const char* iaddr,
+                unsigned short iport,
+                int proto,
+-               const char * desc,
++               const char* desc,
+                unsigned int timestamp)
+ {
+ 	FILE * fd;
+@@ -472,11 +535,11 @@ upnp_redirect_internal(const char * rhos
+ 	 * inform the subscribers */
+ 	upnp_event_var_change_notify(EWanIPC);
+ #endif
++	do_notifyscript_addmap( eport, iaddr, iport, proto, desc, timestamp );
+ 	return 0;
+ }
+ 
+ 
+-
+ /* Firewall independent code which call the FW dependent code. */
+ int
+ upnp_get_redirection_infos(unsigned short eport, const char * protocol,
+@@ -569,6 +632,7 @@ _upnp_delete_redir(unsigned short eport,
+ #ifdef ENABLE_EVENTS
+ 	upnp_event_var_change_notify(EWanIPC);
+ #endif
++	do_notifyscript_delmap( eport, proto );
+ 	return r;
+ }
+ 
